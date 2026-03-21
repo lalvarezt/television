@@ -2577,6 +2577,7 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_with",
+ "shlex",
  "signal-hook 0.4.1",
  "smallvec",
  "string_pipeline",

@@ -8,6 +8,7 @@ use crate::{
 use anyhow::Result;
 use lazy_regex::{Lazy, Regex, regex};
 use rustc_hash::FxHashSet;
+use shlex::try_quote;
 #[cfg(unix)]
 use std::os::unix::process::CommandExt;
 use std::{
@@ -17,6 +18,20 @@ use std::{
 use tracing::debug;
 
 static COMPLEX_BRACES_REGEX: &Lazy<Regex> = regex!(r"\{[^}]+\}");
+
+fn resolve_shell(shell_override: Option<Shell>) -> Shell {
+    shell_override.unwrap_or_else(|| Shell::from_env().unwrap_or_default())
+}
+
+fn quote_shell_arg(arg: &str, shell: Shell) -> Result<String> {
+    match shell {
+        Shell::Psh => Ok(format!("'{}'", arg.replace('\'', "''"))),
+        Shell::Cmd => Ok(format!("\"{}\"", arg.replace('"', "\"\""))),
+        Shell::Bash | Shell::Zsh | Shell::Fish | Shell::Nu => try_quote(arg)
+            .map(|quoted| quoted.into_owned())
+            .map_err(Into::into),
+    }
+}
 
 /// Create a shell command configured for the current platform
 ///
@@ -39,8 +54,7 @@ pub fn shell_command<S>(
     envs: &HashMap<String, String, S>,
     shell_override: Option<Shell>,
 ) -> Command {
-    let shell = shell_override
-        .unwrap_or_else(|| Shell::from_env().unwrap_or_default());
+    let shell = resolve_shell(shell_override);
     let mut cmd = Command::new(shell.executable());
 
     cmd.args(match shell {
@@ -83,16 +97,17 @@ pub fn shell_command<S>(
 /// entries.insert(Entry::new("file1.txt".to_string()));
 /// entries.insert(Entry::new("file 2.txt".to_string()));
 /// let template = Template::parse("nvim {split:\\n:..|map:{append:'|prepend:'}|join: }").unwrap();
-/// let result = format_command(&entries, &template, "\n").unwrap();
-/// // Should produce something like: nvim 'file1.txt' 'file 2.txt'
+/// let result = format_command(&entries, &template, "\n", Some(television::utils::shell::Shell::Bash)).unwrap();
+/// // Should produce something like: nvim file1.txt 'file 2.txt'
 /// assert!(result.starts_with("nvim "));
-/// assert!(result.contains("'file1.txt'"));
+/// assert!(result.contains("file1.txt"));
 /// assert!(result.contains("'file 2.txt'"));
 /// ```
 pub fn format_command(
     entries: &FxHashSet<Entry>,
     template: &Template,
     separator: &str,
+    shell_override: Option<Shell>,
 ) -> Result<String> {
     debug!(
         "Formatting command from {} entries using template",
@@ -109,12 +124,13 @@ pub fn format_command(
             "Using simple brace syntactic sugar for template: {}",
             template_str
         );
+        let shell = resolve_shell(shell_override);
 
         // Multiple entries: quote each and join with spaces
         let quoted_entries: Vec<String> = entries
             .iter()
-            .map(|entry| format!("'{}'", entry.raw.replace('\'', r"\'")))
-            .collect();
+            .map(|entry| quote_shell_arg(&entry.raw, shell))
+            .collect::<Result<_>>()?;
         let entries_joined = quoted_entries.join(SPACE);
         let formatted_command = template_str.replace("{}", &entries_joined);
         debug!("Multiple entries command: {:?}", formatted_command);
@@ -160,8 +176,12 @@ pub fn execute_action(
     debug!("Executing external action with {} entries", entries.len());
 
     let template: &Template = action_spec.command.get_nth(0);
-    let formatted_command =
-        format_command(entries, template, &action_spec.separator)?;
+    let formatted_command = format_command(
+        entries,
+        template,
+        &action_spec.separator,
+        action_spec.command.shell,
+    )?;
 
     let mut cmd = shell_command(
         &formatted_command,
@@ -214,10 +234,12 @@ mod tests {
         let mut entries = FxHashSet::default();
         entries.insert(Entry::new("file1.txt".to_string()));
 
-        // Simple braces should use syntactic sugar with quotes
+        // Simple braces should use shell-aware syntactic sugar
         let template = Template::parse("nvim {}").unwrap();
-        let result = format_command(&entries, &template, "\n").unwrap();
-        assert_eq!(result, "nvim 'file1.txt'");
+        let result =
+            format_command(&entries, &template, "\n", Some(Shell::Bash))
+                .unwrap();
+        assert_eq!(result, "nvim file1.txt");
     }
 
     #[test]
@@ -226,14 +248,16 @@ mod tests {
         entries.insert(Entry::new("file1.txt".to_string()));
         entries.insert(Entry::new("file2.txt".to_string()));
 
-        // Simple braces with multiple entries should quote each and join with spaces
+        // Simple braces with multiple entries should be shell-quoted when needed
         let template = Template::parse("nvim {}").unwrap();
-        let result = format_command(&entries, &template, "\n").unwrap();
+        let result =
+            format_command(&entries, &template, "\n", Some(Shell::Bash))
+                .unwrap();
 
-        // Result should contain both files quoted and joined with space
+        // Result should contain both files joined with space
         assert!(
-            result == "nvim 'file1.txt' 'file2.txt'"
-                || result == "nvim 'file2.txt' 'file1.txt'"
+            result == "nvim file1.txt file2.txt"
+                || result == "nvim file2.txt file1.txt"
         );
     }
 
@@ -244,8 +268,10 @@ mod tests {
 
         // Simple braces should escape single quotes in filenames
         let template = Template::parse("nvim {}").unwrap();
-        let result = format_command(&entries, &template, "\n").unwrap();
-        assert_eq!(result, "nvim 'file\\'s name.txt'");
+        let result =
+            format_command(&entries, &template, "\n", Some(Shell::Bash))
+                .unwrap();
+        assert_eq!(result, "nvim \"file's name.txt\"");
     }
 
     #[test]
@@ -259,7 +285,9 @@ mod tests {
             "nvim {split:\\n:..|map:{append:'|prepend:'}|sort|join: }",
         )
         .unwrap();
-        let result = format_command(&entries, &template, "\n").unwrap();
+        let result =
+            format_command(&entries, &template, "\n", Some(Shell::Bash))
+                .unwrap();
 
         // Result should contain both files quoted and joined with space
         assert!(
@@ -279,7 +307,9 @@ mod tests {
             r"nvim {split:\n:..|map:{replace:s/'/\'/g|append:'|prepend:'}|sort|join: }",
         )
         .unwrap();
-        let result = format_command(&entries, &template, "\n").unwrap();
+        let result =
+            format_command(&entries, &template, "\n", Some(Shell::Bash))
+                .unwrap();
 
         // Result should be escaped with single quotes in filenames
         assert!(
