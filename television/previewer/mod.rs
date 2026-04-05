@@ -373,7 +373,9 @@ pub async fn try_preview(
     cache: Option<Arc<Mutex<Cache>>>,
 ) -> Result<()> {
     let preview_count = command.inner.len();
-    let formatted_command = command.get_nth(cycle_index).format(&entry.raw)?;
+    let formatted_command = command
+        .get_nth(cycle_index)
+        .format_shell(&entry.raw, command.shell)?;
 
     // Check if the entry is already cached
     if let Some(cache) = &cache

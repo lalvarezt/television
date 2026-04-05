@@ -6,6 +6,7 @@ use crate::{
     config::{Keybindings, ui},
     event::Key,
     screen::layout::Orientation,
+    utils::command::{has_only_simple_braces, quote_shell_arg, resolve_shell},
 };
 use anyhow::Result;
 use rustc_hash::FxHashMap;
@@ -13,33 +14,44 @@ use serde::{Deserialize, Serialize};
 use serde_with::{OneOrMany, serde_as};
 use std::fmt::{self, Display, Formatter};
 use std::hash::{Hash, Hasher};
-use string_pipeline::MultiTemplate;
+use string_pipeline::{SectionInfo, Template as MultiTemplate};
 use which::which;
 
 #[derive(Debug, Clone)]
 pub enum Template {
-    StringPipeline(MultiTemplate),
+    StringPipeline {
+        template: MultiTemplate,
+        section_info: Vec<SectionInfo>,
+    },
     Raw(String),
 }
 
 impl Template {
     pub fn raw(&self) -> &str {
         match self {
-            Template::StringPipeline(template) => template.template_string(),
+            Template::StringPipeline { template, .. } => {
+                template.template_string()
+            }
             Template::Raw(raw) => raw,
         }
     }
 
     pub fn parse(template: &str) -> Result<Self, String> {
         match MultiTemplate::parse(template) {
-            Ok(multi_template) => Ok(Template::StringPipeline(multi_template)),
+            Ok(multi_template) => {
+                let section_info = multi_template.get_section_info();
+                Ok(Template::StringPipeline {
+                    template: multi_template,
+                    section_info,
+                })
+            }
             Err(_) => Ok(Template::Raw(template.to_string())),
         }
     }
 
     pub fn format(&self, input: &str) -> Result<String> {
         match self {
-            Template::StringPipeline(template) => {
+            Template::StringPipeline { template, .. } => {
                 template.format(input).map_err(|e| {
                     anyhow::anyhow!(
                         "Failed to format template '{}' with '{}': {}",
@@ -50,6 +62,61 @@ impl Template {
                 })
             }
             Template::Raw(raw) => Ok(raw.replace("{}", input)),
+        }
+    }
+
+    pub fn format_shell(
+        &self,
+        input: &str,
+        shell_override: Option<Shell>,
+    ) -> Result<String> {
+        let shell = resolve_shell(shell_override);
+
+        match self {
+            Template::StringPipeline {
+                template,
+                section_info,
+            } => {
+                if has_only_simple_braces(self.raw()) {
+                    let escaped_input = quote_shell_arg(input, shell)?;
+                    return Ok(self.raw().replace("{}", &escaped_input));
+                }
+
+                let rich = template.format_rich(input).map_err(|e| {
+                    anyhow::anyhow!(
+                        "Failed to format template '{}' with '{}': {}",
+                        self.raw(),
+                        input,
+                        e
+                    )
+                })?;
+
+                let mut formatted_command =
+                    String::with_capacity(rich.rendered().len());
+
+                for section in section_info {
+                    if let Some(content) = &section.content {
+                        formatted_command.push_str(content);
+                        continue;
+                    }
+
+                    let Some(template_position) = section.template_position
+                    else {
+                        continue;
+                    };
+                    let output = rich
+                        .template_output(template_position)
+                        .unwrap_or_default();
+                    let escaped_output = quote_shell_arg(output, shell)?;
+                    formatted_command.push_str(&escaped_output);
+                }
+
+                Ok(formatted_command)
+            }
+            Template::Raw(raw) => {
+                let escaped_input = quote_shell_arg(input, shell)?;
+                Ok(raw.replace("{}", &escaped_input))
+            }
         }
     }
 }
@@ -65,8 +132,10 @@ impl PartialEq for Template {
         self.raw() == other.raw()
             && matches!(
                 (self, other),
-                (Template::StringPipeline(_), Template::StringPipeline(_))
-                    | (Template::Raw(_), Template::Raw(_))
+                (
+                    Template::StringPipeline { .. },
+                    Template::StringPipeline { .. }
+                ) | (Template::Raw(_), Template::Raw(_))
             )
     }
 }
@@ -542,18 +611,8 @@ mod tests {
         let test_2: TestStruct = from_str(raw_2).unwrap();
         let test_3: TestStruct = from_str(raw_3).unwrap();
 
-        assert_eq!(
-            test_1.template,
-            Template::StringPipeline(
-                MultiTemplate::parse("Hello, {}").unwrap()
-            )
-        );
-        assert_eq!(
-            test_2.template,
-            Template::StringPipeline(
-                MultiTemplate::parse("Hello, World").unwrap()
-            )
-        );
+        assert_eq!(test_1.template, Template::parse("Hello, {}").unwrap());
+        assert_eq!(test_2.template, Template::parse("Hello, World").unwrap());
         assert_eq!(
             test_3.template,
             Template::Raw(

@@ -19,16 +19,20 @@ use tracing::debug;
 
 static COMPLEX_BRACES_REGEX: &Lazy<Regex> = regex!(r"\{[^}]+\}");
 
-fn resolve_shell(shell_override: Option<Shell>) -> Shell {
+pub(crate) fn resolve_shell(shell_override: Option<Shell>) -> Shell {
     shell_override.unwrap_or_else(|| Shell::from_env().unwrap_or_default())
 }
 
-fn quote_shell_arg(arg: &str, shell: Shell) -> Result<String> {
+pub(crate) fn has_only_simple_braces(template_str: &str) -> bool {
+    !COMPLEX_BRACES_REGEX.is_match(template_str)
+}
+
+pub(crate) fn quote_shell_arg(arg: &str, shell: Shell) -> Result<String> {
     match shell {
         Shell::Psh => Ok(format!("'{}'", arg.replace('\'', "''"))),
         Shell::Cmd => Ok(format!("\"{}\"", arg.replace('"', "\"\""))),
         Shell::Bash | Shell::Zsh | Shell::Fish | Shell::Nu => try_quote(arg)
-            .map(|quoted| quoted.into_owned())
+            .map(std::borrow::Cow::into_owned)
             .map_err(Into::into),
     }
 }
@@ -116,41 +120,54 @@ pub fn format_command(
 
     let template_str = template.raw();
 
-    // Check if template has only simple braces (syntactic sugar)
-    let has_only_simple_braces = !COMPLEX_BRACES_REGEX.is_match(template_str);
-    if has_only_simple_braces {
-        // Handle simple braces with predictable multi-value logic
-        debug!(
-            "Using simple brace syntactic sugar for template: {}",
-            template_str
-        );
+    if let Template::Raw(raw) = template {
         let shell = resolve_shell(shell_override);
-
-        // Multiple entries: quote each and join with spaces
         let quoted_entries: Vec<String> = entries
             .iter()
             .map(|entry| quote_shell_arg(&entry.raw, shell))
             .collect::<Result<_>>()?;
-        let entries_joined = quoted_entries.join(SPACE);
-        let formatted_command = template_str.replace("{}", &entries_joined);
-        debug!("Multiple entries command: {:?}", formatted_command);
+        let entries_joined = quoted_entries.join(separator);
+        let formatted_command = raw.replace("{}", &entries_joined);
+        debug!("Raw template command: {:?}", formatted_command);
         Ok(formatted_command)
     } else {
-        // Complex braces: use existing template processing
-        debug!("Using complex template processing for: {}", template_str);
+        // Check if template has only simple braces (syntactic sugar)
+        let has_only_simple_braces = has_only_simple_braces(template_str);
+        if has_only_simple_braces {
+            // Handle simple braces with predictable multi-value logic
+            debug!(
+                "Using simple brace syntactic sugar for template: {}",
+                template_str
+            );
+            let shell = resolve_shell(shell_override);
 
-        // Concatenate entries with separator for template processing
-        let entries_str = entries
-            .iter()
-            .map(|entry| entry.raw.as_str())
-            .collect::<Vec<_>>()
-            .join(separator);
-        debug!("Concatenated entries input: {:?}", entries_str);
+            // Multiple entries: quote each and join with spaces
+            let quoted_entries: Vec<String> = entries
+                .iter()
+                .map(|entry| quote_shell_arg(&entry.raw, shell))
+                .collect::<Result<_>>()?;
+            let entries_joined = quoted_entries.join(SPACE);
+            let formatted_command =
+                template_str.replace("{}", &entries_joined);
+            debug!("Multiple entries command: {:?}", formatted_command);
+            Ok(formatted_command)
+        } else {
+            // Complex braces: use existing template processing
+            debug!("Using complex template processing for: {}", template_str);
 
-        // Process through template system
-        let formatted_command = template.format(&entries_str)?;
-        debug!("Final command: {:?}", formatted_command);
-        Ok(formatted_command)
+            // Concatenate entries with separator for template processing
+            let entries_str = entries
+                .iter()
+                .map(|entry| entry.raw.as_str())
+                .collect::<Vec<_>>()
+                .join(separator);
+            debug!("Concatenated entries input: {:?}", entries_str);
+
+            // Process through template system
+            let formatted_command = template.format(&entries_str)?;
+            debug!("Final command: {:?}", formatted_command);
+            Ok(formatted_command)
+        }
     }
 }
 
@@ -315,6 +332,93 @@ mod tests {
         assert!(
             result == "nvim 'file1\\'s.txt' 'file2.txt'"
                 || result == "nvim 'file2.txt' 'file1\\'s.txt'"
+        );
+    }
+
+    #[test]
+    fn test_simple_braces_with_quotes_in_filename_powershell() {
+        let mut entries = FxHashSet::default();
+        entries.insert(Entry::new("file's name.txt".to_string()));
+
+        let template = Template::parse("nvim {}").unwrap();
+        let result =
+            format_command(&entries, &template, "\n", Some(Shell::Psh))
+                .unwrap();
+        assert_eq!(result, "nvim 'file''s name.txt'");
+    }
+
+    #[test]
+    fn test_single_entry_command_quotes_simple_template_output() {
+        let template = Template::parse("nvim {}").unwrap();
+        let result = template
+            .format_shell("file's name.txt", Some(Shell::Bash))
+            .unwrap();
+        assert_eq!(result, "nvim \"file's name.txt\"");
+    }
+
+    #[test]
+    fn test_single_entry_command_quotes_complex_template_output() {
+        let template = Template::parse(
+            "cat {prepend:node_modules/|append:/package.json}",
+        )
+        .unwrap();
+        let result = template
+            .format_shell("pkg's name", Some(Shell::Bash))
+            .unwrap();
+        assert_eq!(result, "cat \"node_modules/pkg's name/package.json\"");
+    }
+
+    #[test]
+    fn test_single_entry_command_quotes_split_template_output() {
+        let template = Template::parse("cat {split:/:-1}").unwrap();
+        let result = template
+            .format_shell("/tmp/file's name.txt", Some(Shell::Bash))
+            .unwrap();
+        assert_eq!(result, "cat \"file's name.txt\"");
+    }
+
+    #[test]
+    fn test_preview_issue_payload_is_quoted_as_single_argument() {
+        let template = Template::parse("bat -n --color=always {}").unwrap();
+        let payload = "'; echo 'foo' > x; echo '";
+        let result =
+            template.format_shell(payload, Some(Shell::Bash)).unwrap();
+        assert_eq!(
+            result,
+            "bat -n --color=always \"'; echo 'foo' > x; echo '\""
+        );
+    }
+
+    #[test]
+    fn test_raw_single_entry_command_quotes_placeholder_output() {
+        let template = Template::parse(
+            "docker images --format '{{.Repository}}:{{.Tag}} {{.ID}}' {}",
+        )
+        .unwrap();
+        let result = template
+            .format_shell("file's name.txt", Some(Shell::Bash))
+            .unwrap();
+        assert_eq!(
+            result,
+            "docker images --format '{{.Repository}}:{{.Tag}} {{.ID}}' \"file's name.txt\""
+        );
+    }
+
+    #[test]
+    fn test_raw_action_template_quotes_entries() {
+        let mut entries = FxHashSet::default();
+        entries.insert(Entry::new("file's name.txt".to_string()));
+
+        let template = Template::parse(
+            "docker images --format '{{.Repository}}:{{.Tag}} {{.ID}}' {}",
+        )
+        .unwrap();
+        let result =
+            format_command(&entries, &template, "\n", Some(Shell::Bash))
+                .unwrap();
+        assert_eq!(
+            result,
+            "docker images --format '{{.Repository}}:{{.Tag}} {{.ID}}' \"file's name.txt\""
         );
     }
 }

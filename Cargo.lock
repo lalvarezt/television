@@ -855,20 +855,11 @@ dependencies = [
 
 [[package]]
 name = "fast-strip-ansi"
-version = "0.11.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "105d2d6bfe89682bfc2b6227b6b582d12682c65f889a89ce6e896026a6b31dec"
-dependencies = [
- "vt-push-parser 0.11.0",
-]
-
-[[package]]
-name = "fast-strip-ansi"
 version = "0.13.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c3086ffd0a7160f58f988c74173a002e255da505a114e2f5425acb1eaab2b8ac"
 dependencies = [
- "vt-push-parser 0.13.1",
+ "vt-push-parser",
 ]
 
 [[package]]
@@ -2477,14 +2468,14 @@ checksum = "a2eb9349b6444b326872e140eb1cf5e7c522154d69e7a0ffb0fb81c06b37543f"
 
 [[package]]
 name = "string_pipeline"
-version = "0.13.0"
+version = "0.14.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "edcdd26a6907177dfa4a9655d25df707a19285109a98400ac7051ea67f4cffad"
+checksum = "2c1b0c508db75479f65494155a0da7c3f9462a0b75c23d3163d4cb80990f4676"
 dependencies = [
  "clap",
  "clap_mangen",
  "dashmap",
- "fast-strip-ansi 0.11.0",
+ "fast-strip-ansi",
  "memchr",
  "once_cell",
  "parking_lot",
@@ -2566,7 +2557,7 @@ dependencies = [
  "crossterm 0.28.1",
  "devicons",
  "directories",
- "fast-strip-ansi 0.13.1",
+ "fast-strip-ansi",
  "human-panic",
  "lazy-regex",
  "parking_lot",
@@ -3036,16 +3027,6 @@ name = "version_check"
 version = "0.9.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
-
-[[package]]
-name = "vt-push-parser"
-version = "0.11.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1f8a8f80d386fd6819e90195fb12b03744a67046e8c22bde0407863d6c172d02"
-dependencies = [
- "hex",
- "smallvec",
-]
 
 [[package]]
 name = "vt-push-parser"

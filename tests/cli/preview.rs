@@ -5,6 +5,20 @@
 //! Preview features are essential for examining file contents and command outputs.
 
 use super::super::common::*;
+use std::{
+    fs,
+    path::PathBuf,
+    time::{SystemTime, UNIX_EPOCH},
+};
+use tempfile::tempdir;
+
+struct FileCleanup(PathBuf);
+
+impl Drop for FileCleanup {
+    fn drop(&mut self) {
+        let _ = fs::remove_file(&self.0);
+    }
+}
 
 /// Tests that --preview-command works in Ad-hoc Mode.
 #[test]
@@ -163,6 +177,55 @@ fn test_preview_word_wrap_with_preview_command() {
     tester.assert_tui_frame_contains("│ Hello    │");
 
     // Send Ctrl+C to exit
+    tester.send(&ctrl('c'));
+    tester.assert_exit_ok(&mut child, DEFAULT_DELAY);
+}
+
+/// Tests that preview placeholder substitution does not allow shell injection.
+#[test]
+fn test_preview_command_escapes_selected_entry_in_shell() {
+    let mut tester = PtyTester::new();
+    let temp_config = TempConfig::init();
+    let source_dir = tempdir().unwrap();
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let marker_name =
+        format!("tv-issue-1016-marker-{}-{nonce}", std::process::id());
+    let marker_path = std::env::current_dir().unwrap().join(&marker_name);
+    let _marker_cleanup = FileCleanup(marker_path.clone());
+
+    let malicious_name =
+        format!("issue1016-'; printf injected > {marker_name}; echo '");
+    let malicious_path = source_dir.path().join(&malicious_name);
+    fs::write(&malicious_path, "SAFE_PREVIEW_1016").unwrap();
+
+    let source_command = format!(
+        "fd --absolute-path -t f . '{}'",
+        source_dir.path().display()
+    );
+    let cmd = tv_with_args(&[
+        "--config-file",
+        temp_config.config_file.to_str().unwrap(),
+        "--cable-dir",
+        temp_config.cable_dir.to_str().unwrap(),
+        "--source-command",
+        &source_command,
+        "--preview-command",
+        "cat {}",
+        "--input",
+        "issue1016-",
+    ]);
+    let mut child = tester.spawn_command_tui(cmd);
+
+    tester.assert_tui_frame_contains("SAFE_PREVIEW_1016");
+    assert!(
+        !marker_path.exists(),
+        "Preview command created unexpected marker file: {}",
+        marker_path.display()
+    );
+
     tester.send(&ctrl('c'));
     tester.assert_exit_ok(&mut child, DEFAULT_DELAY);
 }
