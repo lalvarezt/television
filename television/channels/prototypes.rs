@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 use serde_with::{OneOrMany, serde_as};
 use std::fmt::{self, Display, Formatter};
 use std::hash::{Hash, Hasher};
-use string_pipeline::MultiTemplate;
+use string_pipeline::{MultiTemplate, ParseOptions};
 use which::which;
 
 #[derive(Debug, Clone)]
@@ -31,7 +31,9 @@ impl Template {
     }
 
     pub fn parse(template: &str) -> Result<Self, String> {
-        match MultiTemplate::parse(template) {
+        let mut options = ParseOptions::default();
+        options.escape_braces = true;
+        match MultiTemplate::parse_with_options(template, options) {
             Ok(multi_template) => Ok(Template::StringPipeline(multi_template)),
             Err(_) => Ok(Template::Raw(template.to_string())),
         }

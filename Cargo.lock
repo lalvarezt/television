@@ -2619,8 +2619,7 @@ checksum = "a2eb9349b6444b326872e140eb1cf5e7c522154d69e7a0ffb0fb81c06b37543f"
 [[package]]
 name = "string_pipeline"
 version = "0.13.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2429b7be5150e5df1bb5f6279c0ee50bdc0db417cfe09ddc343f1a32c98eaf07"
+source = "git+https://github.com/lalvarezt/string_pipeline.git?rev=b150229e16575453ec83134a4cd55fb74e0a69fc#b150229e16575453ec83134a4cd55fb74e0a69fc"
 dependencies = [
  "clap",
  "clap_mangen",
