@@ -87,7 +87,10 @@ impl ConfigLayers {
         // channel only fields
         let channel_description = self.channel.metadata.description.clone();
         let channel_requirements = self.channel.metadata.requirements.clone();
-        let channel_actions = self.channel.actions.clone();
+        let mut channel_actions = self.channel.actions.clone();
+        for action in channel_actions.values_mut() {
+            action.command.apply_template_options();
+        }
 
         // CLI > base config fields
         let cable_dir = self
@@ -157,10 +160,9 @@ impl ConfigLayers {
             .as_ref()
             .map(|t| CommandSpec::from(t.clone()))
             .or(self.channel.preview.as_ref().map(|p| p.command.clone()));
-        if let Some(ref mut cmd) = channel_preview_command
-            && cmd.shell.is_none()
-        {
-            cmd.shell = global_shell;
+        if let Some(ref mut cmd) = channel_preview_command {
+            cmd.shell = cmd.shell.or(global_shell);
+            cmd.apply_template_options();
         }
         let channel_preview_offset =
             self.channel_cli.preview_offset.clone().or(

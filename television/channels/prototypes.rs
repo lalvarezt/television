@@ -31,9 +31,7 @@ impl Template {
     }
 
     pub fn parse(template: &str) -> Result<Self, String> {
-        let mut options = ParseOptions::default();
-        options.escape_braces = true;
-        match MultiTemplate::parse_with_options(template, options) {
+        match MultiTemplate::parse(template) {
             Ok(multi_template) => Ok(Template::StringPipeline(multi_template)),
             Err(_) => Ok(Template::Raw(template.to_string())),
         }
@@ -151,6 +149,9 @@ pub struct CommandSpec {
     /// If not specified, the shell is detected from the environment.
     #[serde(default)]
     pub shell: Option<Shell>,
+    /// Enable brace escaping in preview and action templates.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub escape_braces: bool,
 }
 
 impl Display for CommandSpec {
@@ -177,6 +178,27 @@ impl From<Template> for CommandSpec {
 }
 
 impl CommandSpec {
+    pub(crate) fn apply_template_options(&mut self) {
+        if !self.escape_braces {
+            return;
+        }
+
+        let mut options = ParseOptions::default();
+        options.escape_braces = true;
+        for command in &mut self.inner {
+            let template = match command {
+                SourceCommand::Bare(template)
+                | SourceCommand::Named { run: template, .. } => template,
+            };
+            *template = MultiTemplate::parse_with_options(
+                template.raw(),
+                options.clone(),
+            )
+            .map(Template::StringPipeline)
+            .unwrap_or_else(|_| Template::Raw(template.raw().to_owned()));
+        }
+    }
+
     /// This wraps back to the first command in a circular manner.
     ///
     /// # Panics
@@ -284,9 +306,7 @@ impl ChannelPrototype {
                             .expect("Failed to parse command")
                             .into(),
                     ],
-                    interactive: false,
-                    env: FxHashMap::default(),
-                    shell: None,
+                    ..Default::default()
                 },
                 entry_delimiter: None,
                 ansi: false,
@@ -466,9 +486,7 @@ impl PreviewSpec {
                         .expect("Failed to parse preview command")
                         .into(),
                 ],
-                interactive: false,
-                env: FxHashMap::default(),
-                shell: None,
+                ..Default::default()
             },
             offset: None,
             cached: cached_default(),
@@ -552,9 +570,7 @@ mod tests {
                 Template::parse("cmd2").unwrap().into(),
                 Template::parse("cmd3").unwrap().into(),
             ],
-            interactive: false,
-            env: FxHashMap::default(),
-            shell: None,
+            ..Default::default()
         };
 
         assert_eq!(command_spec.get_nth(0).template().raw(), "cmd1");
