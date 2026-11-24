@@ -112,6 +112,16 @@ pub fn format_command(
     separator: &str,
     shell: Shell,
 ) -> Result<String> {
+    format_command_with_options(entries, template, separator, shell, false)
+}
+
+fn format_command_with_options(
+    entries: &FxHashSet<Entry>,
+    template: &Template,
+    separator: &str,
+    shell: Shell,
+    escape_braces: bool,
+) -> Result<String> {
     debug!(
         "Formatting command from {} entries using template",
         entries.len()
@@ -119,8 +129,19 @@ pub fn format_command(
 
     let template_str = template.raw();
 
-    // Check if template has only simple braces (syntactic sugar)
-    let has_only_simple_braces = !COMPLEX_BRACES_REGEX.is_match(template_str);
+    let escaped_template = match template {
+        Template::StringPipeline(parsed) if escape_braces => Some(parsed),
+        _ => None,
+    };
+    let has_only_simple_braces = escaped_template.map_or_else(
+        || !COMPLEX_BRACES_REGEX.is_match(template_str),
+        |parsed| {
+            parsed
+                .get_template_sections()
+                .iter()
+                .all(|(_, ops)| ops.is_empty())
+        },
+    );
     if has_only_simple_braces {
         // Handle simple braces with predictable multi-value logic
         debug!(
@@ -134,7 +155,11 @@ pub fn format_command(
             .map(|entry| shell.quote(&entry.raw))
             .collect();
         let entries_joined = quoted_entries.join(SPACE);
-        let formatted_command = template_str.replace("{}", &entries_joined);
+        let formatted_command = if escaped_template.is_some() {
+            template.format(&entries_joined)?
+        } else {
+            template_str.replace("{}", &entries_joined)
+        };
         debug!("Multiple entries command: {:?}", formatted_command);
         Ok(formatted_command)
     } else {
@@ -183,8 +208,13 @@ pub fn execute_action(
         .shell
         .unwrap_or_else(|| Shell::from_env().unwrap_or_default());
     debug!("Quoting action entries for shell: {}", shell);
-    let formatted_command =
-        format_command(entries, template, &action_spec.separator, shell)?;
+    let formatted_command = format_command_with_options(
+        entries,
+        template,
+        &action_spec.separator,
+        shell,
+        action_spec.command.escape_braces,
+    )?;
 
     let mut cmd = shell_command(
         &formatted_command,
@@ -258,6 +288,38 @@ mod tests {
     use super::*;
     use crate::channels::entry::Entry;
     use crate::utils::shell::Shell;
+
+    #[test]
+    fn test_action_brace_escapes_preserve_simple_placeholder_quoting() {
+        let entries =
+            [Entry::new("alpha beta".to_string())].into_iter().collect();
+        let mut options = string_pipeline::ParseOptions::default();
+        options.escape_braces = true;
+        for (source, expected) in [
+            ("printf '%s' '}}'", "printf '%s' '}'"),
+            (
+                "jq -n --arg file {} '{{file: $file}}'",
+                "jq -n --arg file 'alpha beta' '{file: $file}'",
+            ),
+        ] {
+            let template = Template::StringPipeline(
+                string_pipeline::MultiTemplate::parse_with_options(
+                    source,
+                    options.clone(),
+                )
+                .unwrap(),
+            );
+            let result = format_command_with_options(
+                &entries,
+                &template,
+                "\n",
+                Shell::Bash,
+                true,
+            )
+            .unwrap();
+            assert_eq!(result, expected);
+        }
+    }
 
     #[test]
     fn test_simple_braces_syntactic_sugar() {
